@@ -59,6 +59,7 @@
 #include <livox_ros_driver/CustomMsg.h>
 #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
+#include <pcl/io/ply_io.h>
 
 #define INIT_TIME           (0.1)
 #define LASER_POINT_COV     (0.001)
@@ -139,6 +140,38 @@ geometry_msgs::PoseStamped msg_body_pose;
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
 
+namespace exporting {
+    std::string
+    savePLY(const std::string &out_dir_name, int number, const pcl::PointCloud<pcl::PointXYZINormal> &pointcloud) {
+        char buffer[1024];
+        snprintf(buffer, 1024, "part_%04d.ply", number);
+        pcl::PCLPointCloud2 msg;
+        pcl::toPCLPointCloud2(pointcloud, msg);
+        pcl::PLYWriter writer;
+        writer.write(out_dir_name + "/" + buffer, msg, Eigen::Vector4f::Zero(),
+                     Eigen::Quaternionf::Identity(), true, false);
+
+        return buffer;
+    }
+
+    struct resso {
+        std::string file_name;
+        Eigen::Matrix4d mat;
+    };
+    std::vector<resso> resso_data;
+
+    void saveResso(const std::string &out_dir_name, const std::vector<resso>& resso_data) {
+        std::ofstream resso_file(out_dir_name + "/data.reg");
+        resso_file << resso_data.size() << std::endl;
+        for (const auto &p : resso_data) {
+            resso_file << p.file_name << std::endl;
+            resso_file << p.mat << std::endl;
+        }
+        resso_file.close();
+    }
+    Eigen::Affine3d currentOdom{Eigen::Matrix4d::Identity()};
+
+};
 void SigHandle(int sig)
 {
     flg_exit = true;
@@ -512,16 +545,37 @@ void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
 
         static int scan_wait_num = 0;
         scan_wait_num ++;
-        if (pcl_wait_save->size() > 0 && pcd_save_interval > 0  && scan_wait_num >= pcd_save_interval)
-        {
-            pcd_index ++;
-            string all_points_dir(string(string(ROOT_DIR) + "PCD/scans_") + to_string(pcd_index) + string(".pcd"));
-            pcl::PCDWriter pcd_writer;
-            cout << "current scan saved to /PCD/" << all_points_dir << endl;
-            pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+
+        Eigen::Affine3d new_odom{Eigen::Affine3d::Identity()};
+        Eigen::Vector3d t {state_point.pos.x(),state_point.pos.y(),state_point.pos.z()};
+        Eigen::Quaterniond r{geoQuat.w,geoQuat.x,geoQuat.y,geoQuat.z};
+        new_odom.rotate(r);
+        new_odom.translation() = t;
+
+        if ((t - exporting::currentOdom.translation()).norm()>3) {
+            PointCloudXYZI pcl_wait_save_local;
+            pcl::transformPointCloud(*pcl_wait_save, pcl_wait_save_local,
+                                     exporting::currentOdom.inverse().cast<float>());
+            const std::string ply_filename = exporting::savePLY("/tmp/resso", exporting::resso_data.size(),
+                                                                pcl_wait_save_local);
+            exporting::resso_data.push_back(exporting::resso{ply_filename, exporting::currentOdom.matrix()});
+
+            exporting::saveResso("/tmp/resso",exporting::resso_data);
+            exporting::currentOdom = new_odom;
             pcl_wait_save->clear();
-            scan_wait_num = 0;
         }
+
+//        if (pcl_wait_save->size() > 0 && pcd_save_interval > 0  && scan_wait_num >= pcd_save_interval)
+//        {
+////            pcd_index ++;
+////            string all_points_dir(string(string(ROOT_DIR) + "PCD/scans_") + to_string(pcd_index) + string(".pcd"));
+////            pcl::PCDWriter pcd_writer;
+////            cout << "current scan saved to /PCD/" << all_points_dir << endl;
+////            pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+////            pcl_wait_save->clear();
+////            scan_wait_num = 0;
+//
+//        }
     }
 }
 
